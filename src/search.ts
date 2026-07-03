@@ -7,10 +7,30 @@ interface SearchResult {
 }
 
 export async function webSearch(query: string, num = 5): Promise<SearchResult[]> {
+  // Try Serper first (if key exists), then Brave, then Google scrape
   if (config.serperApiKey) {
-    return serperSearch(query, num);
+    try {
+      return await serperSearch(query, num);
+    } catch (e) {
+      console.error("[search] Serper failed:", e);
+    }
   }
-  return duckDuckGoSearch(query, num);
+
+  // Brave Search API (free, no key needed for basic)
+  try {
+    return await braveSearch(query, num);
+  } catch (e) {
+    console.error("[search] Brave failed:", e);
+  }
+
+  // Google scrape fallback
+  try {
+    return await googleScrape(query, num);
+  } catch (e) {
+    console.error("[search] Google scrape failed:", e);
+  }
+
+  return [];
 }
 
 async function serperSearch(query: string, num: number): Promise<SearchResult[]> {
@@ -31,28 +51,79 @@ async function serperSearch(query: string, num: number): Promise<SearchResult[]>
   }));
 }
 
-async function duckDuckGoSearch(query: string, num: number): Promise<SearchResult[]> {
-  // DuckDuckGo lite/html fallback (no API key needed)
-  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (compatible; SonaBot/1.0)" },
+async function braveSearch(query: string, num: number): Promise<SearchResult[]> {
+  const url = `https://search.brave.com/api/suggest?q=${encodeURIComponent(query)}`;
+  // Use Brave's web search page and parse results
+  const searchUrl = `https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`;
+  const res = await fetch(searchUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
   });
-  if (!res.ok) return [];
+  if (!res.ok) throw new Error(`Brave error: ${res.status}`);
   const html = await res.text();
 
   const results: SearchResult[] = [];
-  const linkRegex = /<a rel="nofollow" class="result__a" href="([^"]+)"[^>]*>(.+?)<\/a>/g;
-  const snippetRegex = /<a class="result__snippet"[^>]*>(.+?)<\/a>/gs;
 
-  const links = [...html.matchAll(linkRegex)];
+  // Parse Brave search results
+  const titleRegex = /<a[^>]*class="[^"]*heading-serpresult[^"]*"[^>]*href="([^"]+)"[^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/g;
+  const snippetRegex = /<p class="snippet-description"[^>]*>([\s\S]*?)<\/p>/g;
+
+  const titles = [...html.matchAll(titleRegex)];
   const snippets = [...html.matchAll(snippetRegex)];
 
-  for (let i = 0; i < Math.min(links.length, num); i++) {
+  for (let i = 0; i < Math.min(titles.length, num); i++) {
     results.push({
-      link: links[i][1],
-      title: links[i][2].replace(/<[^>]+>/g, ""),
-      snippet: snippets[i]?.[1]?.replace(/<[^>]+>/g, "") || "",
+      link: titles[i][1],
+      title: titles[i][2].replace(/<[^>]+>/g, "").trim(),
+      snippet: snippets[i]?.[1]?.replace(/<[^>]+>/g, "").trim() || "",
     });
   }
+
+  if (results.length > 0) return results;
+
+  // Fallback: try simpler regex patterns
+  const altRegex = /<a[^>]*href="(https?:\/\/(?!search\.brave)[^"]+)"[^>]*>[\s]*<span[^>]*class="title"[^>]*>([\s\S]*?)<\/span>/g;
+  const altMatches = [...html.matchAll(altRegex)];
+  for (let i = 0; i < Math.min(altMatches.length, num); i++) {
+    results.push({
+      link: altMatches[i][1],
+      title: altMatches[i][2].replace(/<[^>]+>/g, "").trim(),
+      snippet: "",
+    });
+  }
+
+  if (results.length > 0) return results;
+  throw new Error("No results parsed from Brave");
+}
+
+async function googleScrape(query: string, num: number): Promise<SearchResult[]> {
+  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=${num}&hl=en`;
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "text/html",
+      "Accept-Language": "en-US,en;q=0.9",
+    },
+  });
+  if (!res.ok) throw new Error(`Google error: ${res.status}`);
+  const html = await res.text();
+
+  const results: SearchResult[] = [];
+  // Match Google result blocks: <a href="/url?q=..."><h3>title</h3></a>
+  const regex = /<a[^>]*href="\/url\?q=([^&"]+)[^"]*"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>/g;
+  const matches = [...html.matchAll(regex)];
+
+  for (let i = 0; i < Math.min(matches.length, num); i++) {
+    results.push({
+      link: decodeURIComponent(matches[i][1]),
+      title: matches[i][2].replace(/<[^>]+>/g, "").trim(),
+      snippet: "",
+    });
+  }
+
+  if (results.length === 0) throw new Error("No results from Google scrape");
   return results;
 }

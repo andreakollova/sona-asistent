@@ -41,12 +41,8 @@ app.event("message", async ({ event, say }) => {
   const channelId: string = msg.channel;
   const channelType: string = msg.channel_type; // im = DM, channel, group
 
-  // Respond to ALL messages in channels where Sona is a member + DMs
+  // Respond to ALL messages — DMs, mentions, and channel messages
   const isDM = channelType === "im";
-  const isMention = botUserId ? text.includes(`<@${botUserId}>`) : false;
-
-  // Skip if it's a mention — app_mention handler takes care of those to avoid duplicates
-  if (isMention && !isDM) return;
 
   // Clean mention from text
   const cleanText = botUserId
@@ -132,77 +128,8 @@ app.event("message", async ({ event, say }) => {
 
 // ── App mention handler (for channels) ──
 
-app.event("app_mention", async ({ event, say }) => {
-  console.log("[debug] app_mention received:", JSON.stringify(event).slice(0, 300));
-  const text: string = (event as any).text || "";
-  const userId: string = (event as any).user;
-  const channelId: string = (event as any).channel;
-
-  // Clean mention from text
-  const cleanText = botUserId
-    ? text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim()
-    : text;
-
-  if (!cleanText) return;
-
-  // Handle mute
-  if (isMuteTrigger(cleanText)) {
-    await activateMute(app, channelId);
-    await say("Ok, som ticho. Ozvem sa o 15 min ci uz mozem.");
-    return;
-  }
-
-  const muteState = await getState("mute");
-  if (muteState?.active && isUnmuteTrigger(cleanText)) {
-    await deactivateMute();
-    await say("Super, som spat! Co potrebujes?");
-    return;
-  }
-  if (await isMuted()) return;
-
-  let userName = "user";
-  try {
-    const userInfo = await app.client.users.info({ user: userId });
-    userName = userInfo.user?.real_name || userInfo.user?.name || "user";
-  } catch {}
-
-  await saveMessage({
-    user_id: userId,
-    user_name: userName,
-    channel_id: channelId,
-    role: "user",
-    content: cleanText,
-  });
-
-  const history = await getRecentContext(channelId, 20);
-  const conversationMessages = history.slice(0, -1).map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.role === "user" ? `[${m.user_name || "user"}]: ${m.content}` : m.content,
-  }));
-
-  const useOpus = shouldUseOpus(cleanText);
-
-  try {
-    const response = await chat(
-      `[${userName}]: ${cleanText}`,
-      conversationMessages,
-      { mode: "reactive", useOpus }
-    );
-
-    if (response && response.trim() !== "[TICHO]") {
-      await say(response);
-      await saveMessage({
-        user_id: "sona",
-        channel_id: channelId,
-        role: "assistant",
-        content: response,
-      });
-    }
-  } catch (err) {
-    console.error("[app_mention] Error:", err);
-    await say("Ups, nieco sa pokazilo. Skus to znova za chvilu.");
-  }
-});
+// app_mention is handled by the message event handler above — no separate logic needed
+app.event("app_mention", async () => {});
 
 function shouldUseOpus(text: string): boolean {
   const opusTriggers = [
